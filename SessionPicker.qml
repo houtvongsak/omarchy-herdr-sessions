@@ -77,7 +77,7 @@ Item {
   property int cardWidth: Math.min(Style.space(680), panel.width - Style.gapsOut * 2)
   // Sized for the fullest tab, so the card doesn't jump when switching machines.
   property int listRows: Math.max(4, root.maxRows())
-  property int contentHeight: root.headerHeight + root.tabsHeight + Style.normalBorderWidth + root.footerHeight
+  property int contentHeight: root.headerHeight + root.tabsHeight + Style.normalBorderWidth + Math.max(root.footerHeight, footer.implicitHeight)
     + root.contentSpacing * 4 + root.listRows * root.rowHeight + (root.listRows - 1) * Style.space(4)
   property int cardHeight: Math.min(card.contentTopInset + card.contentBottomInset + root.contentHeight,
     Style.space(560), panel.height - Style.gapsOut * 2)
@@ -590,7 +590,8 @@ Item {
     var parts = []
     function add(label, actions) {
       var keys = actions.map(root.hint).filter(function(key) { return key !== "" })
-      if (keys.length > 0) parts.push(keys.join(keys.every(function(key) { return key.length === 1 }) ? "" : "/") + " " + label)
+      // A no-break space keeps each "key label" pair whole when the footer wraps.
+      if (keys.length > 0) parts.push(keys.join(keys.every(function(key) { return key.length === 1 }) ? "" : "/") + "\u00a0" + label)
     }
     add("move", ["up", "down"])
     add("machine", ["nextMachine"])
@@ -1278,8 +1279,11 @@ Item {
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: parent.bottom
-          height: root.footerHeight
+          height: Math.max(root.footerHeight, implicitHeight)
           verticalAlignment: Text.AlignBottom
+          // Long hint lists wrap between hints rather than running off the card.
+          wrapMode: Text.WordWrap
+          maximumLineCount: 3
           text: root.choosingKeys ? "↑↓ choose · enter save · esc default · change any time in ~/.config/herdr-sessions/keys.json"
             : root.keysWarning && !root.formMode ? "keys.json: " + root.keysWarning
             : root.formMode ? "enter " + (root.formMode === "machine" ? "add" : "create") + " · esc cancel"

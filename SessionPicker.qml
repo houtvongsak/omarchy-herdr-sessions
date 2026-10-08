@@ -875,6 +875,7 @@ Item {
 
           Text {
             id: countText
+            textFormat: Text.PlainText
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             readonly property var tab: root.currentTab

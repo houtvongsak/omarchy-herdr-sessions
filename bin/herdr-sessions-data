@@ -29,6 +29,7 @@ self=${self%%.*}
 
 # user@host, a Host from ~/.ssh/config, or an ssh:// URL as herdr itself accepts.
 valid_target() { [[ $1 =~ ^(ssh://)?[A-Za-z0-9][A-Za-z0-9@._:-]*$ ]]; }
+valid_host() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 valid_session() { [[ $1 =~ ^[A-Za-z0-9._-]{1,64}$ && $1 != . && $1 != .. ]]; }
 
 # One name per machine, whichever way it is written: user@host, an ssh alias or the full
@@ -78,6 +79,7 @@ fetch() { # <target> <key> <outfile>
   rc=${PIPESTATUS[0]}
   # Markers, because a shell startup file on the far side may print something of its own.
   host=$(awk '/^@@host$/ {getline; print; exit}' <<<"$out")
+  valid_host "$host" || host=""
   version=$(herdr_version awk '/^@@version$/ {getline; print; exit}' <<<"$out")
   json=$(awk 'f; /^@@json$/ {f = 1}' <<<"$out")
   if ((rc == 0)) && jq -e '.sessions | type == "array"' >/dev/null 2>&1 <<<"$json"; then

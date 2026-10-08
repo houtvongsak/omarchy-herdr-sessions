@@ -231,7 +231,8 @@ Item {
         name: s.name,
         running: s.running === true,
         isDefault: s.default === true,
-        sessionDir: root.prettyPath(s.session_dir || "", tab.local),
+        // host:path, as ssh and scp write it, so a remote "default" can't pass for a local one.
+        sessionDir: (tab.local ? "" : tab.label + ":") + root.prettyPath(s.session_dir || "", tab.local),
         attachedHere: root.isAttached(tab.key, s.name)
       })
     }
@@ -807,10 +808,10 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             readonly property var tab: root.currentTab
             readonly property bool mismatch: root.versionMismatch(tab)
-            text: !tab ? "" : !tab.loaded ? "checking…" : !tab.ok ? "unreachable"
+            text: !tab ? "" : tab.label + " · " + (!tab.loaded ? "checking…" : !tab.ok ? "unreachable"
               : tab.sessions.length + (tab.sessions.length === 1 ? " session" : " sessions")
                 + (tab.version ? " · herdr " + tab.version : "")
-                + (mismatch ? " (" + root.localVersion + " here)" : "")
+                + (mismatch ? " (" + root.localVersion + " here)" : ""))
             color: mismatch ? Color.urgent : root.foreground
             opacity: mismatch ? 0.9 : 0.5
             font.family: root.fontFamily

@@ -42,6 +42,12 @@ Item {
   property string keyPreset: "default"
   property bool typeToSearch: true
   property var keymap: root.presetKeys("default")
+  // Keys that clash or can never fire, explained in the footer so a typo isn't silent.
+  property string keysWarning: ""
+  // No keys.json yet (a first run, or an update from before it existed): ask once.
+  property bool keysChosen: true
+  property bool choosingKeys: false
+  property int keyChoiceIndex: 0
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string dataScript: decodeURIComponent(String(Qt.resolvedUrl("bin/herdr-sessions-data")).replace(/^file:\/\//, ""))
@@ -83,6 +89,8 @@ Item {
     root.formMode = ""
     root.pendingConfirm = null
     root.tabIndex = 0
+    root.choosingKeys = !root.keysChosen
+    root.keyChoiceIndex = 0
     root.disarmPointer()
     root.refreshAll()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -441,6 +449,41 @@ Item {
     root.keyPreset = preset
     root.typeToSearch = typeof config.typeToSearch === "boolean" ? config.typeToSearch : preset !== "vim"
     root.keymap = map
+    root.keysWarning = root.keyProblems(map, root.typeToSearch)
+  }
+
+  function keyProblems(map, typing) {
+    var owners = {}
+    var problems = []
+    for (var action in map) {
+      for (var i = 0; i < map[action].length; i++) {
+        var spec = map[action][i]
+        if (owners[spec] && owners[spec] !== action) {
+          problems.push(root.keyLabel(spec) + " is on both " + owners[spec] + " and " + action)
+        }
+        owners[spec] = owners[spec] || action
+        // With type-to-search a bare letter or symbol types instead of running the action.
+        if (typing && spec.length === 1) problems.push(root.keyLabel(spec) + " for " + action + " only types (type-to-search is on)")
+      }
+    }
+    return problems.join(" · ")
+  }
+
+  // The one-time choice for anyone without a keys.json, saved so it isn't asked again.
+  readonly property var keyChoices: [
+    { preset: "default", title: "Default · type to search",
+      detail: "Type a name to filter. Ctrl+N new, Ctrl+S stop, Ctrl+D delete, Tab next machine. Like Omarchy's other pickers." },
+    { preset: "vim", title: "Vim · hjkl",
+      detail: "j k sessions, h l machines, / to search. Single letters n s d a x for new, stop, delete, add, remove." }
+  ]
+
+  function chooseKeys(preset) {
+    var json = JSON.stringify({ preset: preset }, null, 2)
+    Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1"', "sh",
+      root.keysPath, json])
+    root.loadKeys(json)
+    root.keysChosen = true
+    root.choosingKeys = false
   }
 
   // "Ctrl+Shift+Tab", "shift+ctrl+tab" and "ctrl+shift+tab" all become "ctrl+shift+tab".
@@ -549,8 +592,8 @@ Item {
     path: root.keysPath
     watchChanges: true
     printErrors: false
-    onLoaded: root.loadKeys(text())
-    onLoadFailed: root.loadKeys("")
+    onLoaded: { root.keysChosen = true; root.loadKeys(text()) }
+    onLoadFailed: { root.keysChosen = false; root.loadKeys("") }
     onFileChanged: reload()
   }
 
@@ -667,6 +710,23 @@ Item {
           }
 
           event.accepted = true
+
+          if (root.choosingKeys) {
+            if (event.key === Qt.Key_Up || event.key === Qt.Key_Down || event.key === Qt.Key_Tab
+                || event.key === Qt.Key_Backtab || event.key === Qt.Key_J || event.key === Qt.Key_K) {
+              root.keyChoiceIndex = root.keyChoiceIndex === 0 ? 1 : 0
+            } else if (event.key === Qt.Key_1 || event.key === Qt.Key_D) {
+              root.chooseKeys("default")
+            } else if (event.key === Qt.Key_2 || event.key === Qt.Key_V) {
+              root.chooseKeys("vim")
+            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+              root.chooseKeys(root.keyChoices[root.keyChoiceIndex].preset)
+            } else if (event.key === Qt.Key_Escape) {
+              root.chooseKeys("default")
+            }
+            return
+          }
+
           // Typing goes into the search when type-to-search is on, or after the search key;
           // everything else is looked up in the keymap.
           var textMode = root.typeToSearch || root.searching
@@ -730,11 +790,12 @@ Item {
             anchors.right: countText.left
             anchors.rightMargin: root.contentSpacing
             anchors.verticalCenter: parent.verticalCenter
-            text: root.formMode === "session" ? "New session on " + (root.currentTab ? root.currentTab.label : "")
+            text: root.choosingKeys ? "How do you like your keys?"
+              : root.formMode === "session" ? "New session on " + (root.currentTab ? root.currentTab.label : "")
               : root.formMode === "machine" ? "Add a machine"
               : root.filterText || (root.typeToSearch ? "Search sessions…" : root.searching ? "Search…" : "Herdr sessions")
             color: root.foreground
-            opacity: root.filterText || root.formMode || !(root.typeToSearch || root.searching) ? 1 : 0.58
+            opacity: root.choosingKeys || root.filterText || root.formMode || !(root.typeToSearch || root.searching) ? 1 : 0.58
             font.family: root.fontFamily
             font.pixelSize: Style.font.heading
             elide: Text.ElideRight
@@ -827,7 +888,7 @@ Item {
           ListView {
             id: sessionList
             anchors.fill: parent
-            visible: root.formMode === ""
+            visible: root.formMode === "" && !root.choosingKeys
             model: displayModel
             clip: true
             spacing: Style.space(4)
@@ -1007,7 +1068,7 @@ Item {
             anchors.centerIn: parent
             width: parent.width - root.rowPadding * 2
             spacing: Style.space(6)
-            visible: root.formMode === "" && displayModel.count === 0
+            visible: root.formMode === "" && !root.choosingKeys && displayModel.count === 0
 
             Text {
               width: parent.width
@@ -1035,6 +1096,69 @@ Item {
               opacity: 0.45
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
+            }
+          }
+
+          // One-time key preset choice
+          Column {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            visible: root.choosingKeys
+            spacing: Style.space(4)
+
+            Repeater {
+              model: root.keyChoices
+
+              Rectangle {
+                id: choice
+                required property int index
+                required property var modelData
+                readonly property bool hasCursor: index === root.keyChoiceIndex
+
+                width: parent.width
+                height: choiceText.implicitHeight + root.rowPadding * 2
+                radius: root.cornerRadius
+                color: hasCursor ? root.selectedBackground : "transparent"
+
+                Column {
+                  id: choiceText
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: root.rowPadding + root.markerWidth + Style.space(10)
+                  anchors.rightMargin: root.rowPadding
+                  spacing: Style.space(2)
+
+                  Text {
+                    text: (choice.index + 1) + "  " + choice.modelData.title
+                    color: choice.hasCursor ? root.selectedText : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title
+                  }
+
+                  Text {
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: choice.modelData.detail
+                    color: root.foreground
+                    opacity: 0.5
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  // Only a real mouse move selects, so a resting pointer can't change the choice.
+                  onPositionChanged: function(mouse) {
+                    if (pointerGate.moved(choice, mouse)) root.keyChoiceIndex = choice.index
+                  }
+                  onClicked: root.chooseKeys(choice.modelData.preset)
+                }
+              }
             }
           }
 
@@ -1114,11 +1238,14 @@ Item {
           anchors.bottom: parent.bottom
           height: root.footerHeight
           verticalAlignment: Text.AlignBottom
-          text: root.formMode ? "enter " + (root.formMode === "machine" ? "add" : "create") + " · esc cancel"
+          text: root.choosingKeys ? "↑↓ choose · enter save · esc default · change any time in ~/.config/herdr-sessions/keys.json"
+            : root.keysWarning && !root.formMode ? "keys.json: " + root.keysWarning
+            : root.formMode ? "enter " + (root.formMode === "machine" ? "add" : "create") + " · esc cancel"
             : root.searching ? "type to search · ↑↓ select · enter open · esc stop searching"
             : root.footerHints()
-          color: root.foreground
-          opacity: 0.45
+          readonly property bool warning: !root.choosingKeys && !root.formMode && root.keysWarning !== ""
+          color: warning ? Color.urgent : root.foreground
+          opacity: warning ? 0.9 : 0.45
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight

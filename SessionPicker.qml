@@ -5,6 +5,8 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
+// Herdr sessions on this computer and on other machines, one tab per machine.
+// Remote machines come from bin/herdr-sessions-data, which asks each one over SSH.
 Item {
   id: root
 
@@ -13,18 +15,27 @@ Item {
 
   property bool opened: false
   property string filterText: ""
+  property bool searching: false
   property int selectedIndex: 0
   property bool cursorActive: false
-  property var sessions: []
-  // Enabled SSH machines saved with `herdr machine add`, and the latest
-  // `herdr machine status` result for each, keyed by profile id.
-  property var machines: []
-  property var machineStatus: ({})
 
-  property bool creatingNew: false
-  property string deleteTargetSession: ""
+  // This computer's sessions, as `herdr session list --json` gives them.
+  property var sessions: []
+  property string hostName: ""
+  // Other machines, in list order: {target, key, label, loaded, ok, error, sessions}.
+  property var machines: []
+  // Sessions this computer's herdr clients are showing: {key, session}, key "" for local.
+  property var attached: []
+  property int tabIndex: 0
+
+  // "" (the list), "session" (new session form) or "machine" (add machine form).
+  property string formMode: ""
+  // What the confirm dialog is about: {kind: "delete"|"remove", target, name}.
+  property var pendingConfirm: null
 
   readonly property string home: Quickshell.env("HOME")
+  readonly property string dataScript: decodeURIComponent(String(Qt.resolvedUrl("bin/herdr-sessions-data")).replace(/^file:\/\//, ""))
+  readonly property var currentTab: root.tabAt(root.tabIndex)
 
   // Shares the [menu] surface tokens, like the built-in clipboard picker,
   // so themes that style the menu also style this picker.
@@ -40,33 +51,36 @@ Item {
   property int contentMargin: Style.spacing.panelPadding
   property int contentSpacing: Style.spacing.md
   property int headerHeight: Math.max(Style.space(34), Style.font.title + Style.spacing.controlPaddingY * 2)
+  property int tabsHeight: Style.font.body + Style.spacing.controlPaddingY * 2
   property int footerHeight: Style.font.caption + Style.spacing.sm * 2
   property int rowHeight: Math.max(Style.space(50), Style.font.title + Style.font.caption + Style.spacing.rowPaddingX * 2)
   property int rowPadding: Style.spacing.rowPaddingX
   property int markerWidth: Style.space(16)
-  property int cardWidth: Math.min(Style.space(600), panel.width - Style.gapsOut * 2)
-  property int listRows: Math.max(3, displayModel.count)
-  property int contentHeight: root.headerHeight + Style.normalBorderWidth + root.footerHeight + root.contentSpacing * 3
-    + root.listRows * root.rowHeight + (root.listRows - 1) * Style.space(4)
+  property int cardWidth: Math.min(Style.space(680), panel.width - Style.gapsOut * 2)
+  property int listRows: Math.max(4, displayModel.count)
+  property int contentHeight: root.headerHeight + root.tabsHeight + Style.normalBorderWidth + root.footerHeight
+    + root.contentSpacing * 4 + root.listRows * root.rowHeight + (root.listRows - 1) * Style.space(4)
   property int cardHeight: Math.min(card.contentTopInset + card.contentBottomInset + root.contentHeight,
-    Style.space(460), panel.height - Style.gapsOut * 2)
+    Style.space(560), panel.height - Style.gapsOut * 2)
 
   function open(payloadJson) {
     root.opened = true
     root.filterText = ""
+    root.searching = false
     root.selectedIndex = 0
     root.cursorActive = true
-    root.creatingNew = false
-    root.deleteTargetSession = ""
+    root.formMode = ""
+    root.pendingConfirm = null
+    root.tabIndex = 0
     root.disarmPointer()
-    root.refreshSessions()
+    root.refreshAll()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function close() {
     root.opened = false
-    root.creatingNew = false
-    root.deleteTargetSession = ""
+    root.formMode = ""
+    root.pendingConfirm = null
   }
 
   function dismiss() {
@@ -81,112 +95,118 @@ Item {
     else root.open("{}")
   }
 
-  function refreshSessions() {
+  // ---------------------------------------------------------------- data
+
+  function refreshAll() {
     if (!listProc.running) listProc.running = true
+    if (!attachedProc.running) attachedProc.running = true
     if (!machineListProc.running) machineListProc.running = true
   }
 
+  function refreshLocal() {
+    if (!listProc.running) listProc.running = true
+    if (!attachedProc.running) attachedProc.running = true
+  }
+
+  function parseJson(raw, fallback, what) {
+    if (!String(raw || "").trim()) return fallback
+    try {
+      return JSON.parse(raw)
+    } catch (e) {
+      console.warn("herdr-sessions: couldn't read " + what + ":", e, raw)
+      return fallback
+    }
+  }
+
   function parseSessions(raw) {
-    try {
-      var data = JSON.parse(raw)
-      root.sessions = data.sessions || []
-    } catch (e) {
-      console.warn("herdr session parser error:", e, raw)
-      root.sessions = []
-    }
+    root.sessions = root.parseJson(raw, {}, "herdr session list").sessions || []
     root.rebuildDisplay()
   }
 
-  // Herdr before 0.9 has no `machine` command and prints nothing on stdout,
-  // which leaves the picker showing local sessions only.
-  function parseMachines(raw) {
-    var rows = []
-    if (raw.trim()) {
-      try {
-        rows = JSON.parse(raw) || []
-      } catch (e) {
-        console.warn("herdr machine parser error:", e, raw)
-      }
-    }
-    root.machines = rows.filter(function(m) { return m.enabled === true })
-    root.rebuildDisplay()
-    // The status check is a fresh SSH round trip per machine, so the list is
-    // drawn first and each row's status fills in when the check returns.
-    if (root.machines.length > 0 && !machineStatusProc.running) machineStatusProc.running = true
-  }
-
-  function parseMachineStatus(raw) {
-    var next = {}
-    try {
-      var rows = JSON.parse(raw) || []
-      for (var i = 0; i < rows.length; i++) next[rows[i].id] = rows[i].status
-    } catch (e) {
-      console.warn("herdr machine status parser error:", e, raw)
-      for (var j = 0; j < root.machines.length; j++) next[root.machines[j].id] = "unknown"
-    }
-    root.machineStatus = next
-    root.rebuildDisplay()
-  }
-
-  function machineStatusText(id) {
-    var status = root.machineStatus[id]
-    if (status === undefined) return "checking…"
-    if (status === "error") return "unreachable"
-    return status
-  }
-
-  function machineMatches(m, search) {
-    return [m.label, m.target, m.session].some(function(value) {
-      return String(value || "").toLowerCase().indexOf(search) !== -1
+  // The machine list arrives at once; each machine's sessions follow over SSH.
+  function parseMachineList(raw) {
+    var data = root.parseJson(raw, {}, "the machine list")
+    root.hostName = data.host || root.hostName
+    var previous = {}
+    for (var i = 0; i < root.machines.length; i++) previous[root.machines[i].key] = root.machines[i]
+    root.machines = (data.machines || []).map(function(m) {
+      var old = previous[m.key]
+      return old ? old : { target: m.target, key: m.key, label: m.target, loaded: false, ok: false, error: "", sessions: [] }
     })
+    if (root.tabIndex > root.machines.length) root.tabIndex = root.machines.length
+    root.rebuildDisplay()
+    if (root.machines.length > 0 && !machinesProc.running) machinesProc.running = true
   }
 
-  function prettyPath(path) {
-    if (root.home && path.indexOf(root.home) === 0) return "~" + path.slice(root.home.length)
-    return path
+  function parseMachines(raw) {
+    var rows = root.parseJson(raw, [], "remote sessions")
+    var byKey = {}
+    for (var i = 0; i < rows.length; i++) byKey[rows[i].key] = rows[i]
+    root.machines = root.machines.map(function(m) {
+      var row = byKey[m.key]
+      if (!row) return m
+      return { target: row.target, key: row.key, label: row.label, loaded: true, ok: row.ok === true,
+        error: row.error || "", sessions: row.sessions || [] }
+    })
+    root.rebuildDisplay()
+  }
+
+  function parseAttached(raw) {
+    root.attached = root.parseJson(raw, [], "attached herdr clients")
+    root.rebuildDisplay()
+  }
+
+  function isAttached(key, name) {
+    for (var i = 0; i < root.attached.length; i++) {
+      if (root.attached[i].key === key && root.attached[i].session === name) return true
+    }
+    return false
+  }
+
+  function tabAt(index) {
+    if (index === 0) {
+      return { local: true, key: "", target: "", label: root.hostName || "This computer", loaded: true, ok: true,
+        error: "", sessions: root.sessions }
+    }
+    var m = root.machines[index - 1]
+    if (!m) return null
+    return { local: false, key: m.key, target: m.target, label: m.label, loaded: m.loaded, ok: m.ok, error: m.error,
+      sessions: m.sessions }
+  }
+
+  function tabCount() {
+    return root.machines.length + 1
+  }
+
+  // Session folders on another machine are shown relative to its home, like local ones.
+  function prettyPath(path, local) {
+    var value = String(path || "")
+    if (local && root.home && value.indexOf(root.home) === 0) return "~" + value.slice(root.home.length)
+    return value.replace(/^\/home\/[^\/]+/, "~").replace(/^\/root(?=\/|$)/, "~")
   }
 
   function rebuildDisplay() {
     displayModel.clear()
+    var tab = root.currentTab
     var search = root.filterText.trim().toLowerCase()
+    var list = tab ? tab.sessions : []
 
-    for (var i = 0; i < root.sessions.length; i++) {
-      var s = root.sessions[i]
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i]
       if (search && s.name.toLowerCase().indexOf(search) === -1) continue
       displayModel.append({
         isNewButton: false,
-        isMachine: false,
         name: s.name,
         running: s.running === true,
         isDefault: s.default === true,
-        sessionDir: root.prettyPath(s.session_dir || ""),
-        target: "",
-        remoteSession: "",
-        status: ""
+        sessionDir: root.prettyPath(s.session_dir || "", tab.local),
+        attachedHere: root.isAttached(tab.key, s.name)
       })
     }
 
-    // A saved machine targets one session on its host, so it is one row.
-    for (var j = 0; j < root.machines.length; j++) {
-      var m = root.machines[j]
-      if (search && !root.machineMatches(m, search)) continue
-      var remoteSession = m.session || "default"
-      displayModel.append({
-        isNewButton: false,
-        isMachine: true,
-        name: m.label,
-        running: root.machineStatus[m.id] === "reachable",
-        isDefault: false,
-        sessionDir: m.target + " · " + (remoteSession === "default" ? "default session" : "session " + remoteSession),
-        target: m.target,
-        remoteSession: remoteSession,
-        status: root.machineStatusText(m.id)
-      })
-    }
-
-    if (!search) {
-      displayModel.append({ isNewButton: true, isMachine: false, name: "", running: false, isDefault: false,
-        sessionDir: "", target: "", remoteSession: "", status: "" })
+    if (!search && tab && (tab.local || tab.ok)) {
+      displayModel.append({ isNewButton: true, name: "", running: false, isDefault: false, sessionDir: "",
+        attachedHere: false })
     }
 
     if (displayModel.count === 0) selectedIndex = 0
@@ -197,6 +217,8 @@ Item {
       if (displayModel.count > 0) sessionList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
     })
   }
+
+  // ---------------------------------------------------------------- navigation
 
   function select(delta) {
     if (displayModel.count === 0) return
@@ -210,6 +232,19 @@ Item {
     sessionList.positionViewAtIndex(selectedIndex, ListView.Contain)
   }
 
+  function switchTab(delta) {
+    root.setTab((root.tabIndex + delta + root.tabCount()) % root.tabCount())
+  }
+
+  function setTab(index) {
+    if (index === root.tabIndex) return
+    root.tabIndex = index
+    root.selectedIndex = 0
+    root.cursorActive = true
+    root.disarmPointer()
+    root.rebuildDisplay()
+  }
+
   function selectedRow() {
     if (!root.cursorActive || root.selectedIndex < 0 || root.selectedIndex >= displayModel.count) return null
     return displayModel.get(root.selectedIndex)
@@ -217,33 +252,31 @@ Item {
 
   function activate(row) {
     if (!row) return
-    if (row.isNewButton) root.startCreateNew()
-    else if (row.isMachine) root.launchMachine(row.target, row.remoteSession)
-    else root.launchSession(row.name)
+    if (row.isNewButton) root.startForm("session")
+    else root.launchSession(root.currentTab, row.name)
   }
 
-  // Attach the way herdr's own docs give for a saved machine. Running it in a
-  // terminal also lets SSH ask for a passphrase or a new host key when the
-  // status check says "auth required".
-  function launchMachine(target, remoteSession) {
+  // ---------------------------------------------------------------- actions
+
+  // A stopped session starts again when it is opened: `herdr --session` starts its server,
+  // and `--remote` starts the far side's.
+  function launchSession(tab, name) {
+    if (!tab) return
     root.dismiss()
-    var command = ["omarchy-launch-terminal", "herdr", "--remote", target]
-    if (remoteSession && remoteSession !== "default") command.push("--session", remoteSession)
+    var command = ["omarchy-launch-terminal", "herdr"]
+    if (!tab.local) command.push("--remote", tab.target)
+    if (name !== "default") command.push("--session", name)
     Quickshell.execDetached(command)
   }
 
-  function launchSession(name) {
-    root.dismiss()
-    if (name === "default") {
-      Quickshell.execDetached(["omarchy-launch-terminal", "herdr"])
-    } else {
-      Quickshell.execDetached(["omarchy-launch-terminal", "herdr", "--session", name])
-    }
-  }
-
   function stopSession(row) {
-    // Herdr does not forward session management to saved machines.
-    if (!row || row.isNewButton || row.isMachine || !row.running) return
+    var tab = root.currentTab
+    if (!row || row.isNewButton || !row.running || !tab) return
+    if (!tab.local) {
+      Quickshell.execDetached([root.dataScript, "stop", tab.target, row.name])
+      remoteRefreshTimer.restart()
+      return
+    }
     if (row.isDefault) {
       Quickshell.execDetached(["herdr", "server", "stop"])
     } else {
@@ -253,41 +286,66 @@ Item {
   }
 
   function requestDeleteSession(row) {
-    if (!row || row.isNewButton || row.isMachine || row.running || row.isDefault) return
+    var tab = root.currentTab
+    if (!row || row.isNewButton || row.running || row.isDefault || !tab) return
     confirmDialog.selectedIndex = 1
-    root.deleteTargetSession = row.name
+    root.pendingConfirm = { kind: "delete", target: tab.local ? "" : tab.target, name: row.name }
   }
 
-  function cancelDelete() {
-    root.deleteTargetSession = ""
+  function requestRemoveMachine() {
+    var tab = root.currentTab
+    if (!tab || tab.local) return
+    confirmDialog.selectedIndex = 1
+    root.pendingConfirm = { kind: "remove", target: tab.target, name: tab.label }
+  }
+
+  function cancelConfirm() {
+    root.pendingConfirm = null
     root.disarmPointer()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  function executeDeleteSession() {
-    var target = root.deleteTargetSession
-    root.cancelDelete()
-    if (!target) return
-    Quickshell.execDetached(["herdr", "session", "delete", target])
-    refreshTimer.restart()
+  function executeConfirm() {
+    var pending = root.pendingConfirm
+    root.cancelConfirm()
+    if (!pending) return
+    if (pending.kind === "remove") {
+      Quickshell.execDetached([root.dataScript, "remove", pending.target])
+      root.tabIndex = 0
+      machineListTimer.restart()
+    } else if (pending.target) {
+      Quickshell.execDetached([root.dataScript, "delete", pending.target, pending.name])
+      remoteRefreshTimer.restart()
+    } else {
+      Quickshell.execDetached(["herdr", "session", "delete", pending.name])
+      refreshTimer.restart()
+    }
   }
 
-  function startCreateNew() {
-    root.creatingNew = true
-    newSessionInput.text = ""
-    Qt.callLater(function() { newSessionInput.forceActiveFocus() })
+  function startForm(mode) {
+    if (mode === "session" && root.currentTab && !root.currentTab.local && !root.currentTab.ok) return
+    root.formMode = mode
+    formInput.text = ""
+    Qt.callLater(function() { formInput.forceActiveFocus() })
   }
 
-  function cancelCreateNew() {
-    root.creatingNew = false
+  function cancelForm() {
+    root.formMode = ""
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  function submitNewSession() {
-    var name = newSessionInput.text.trim()
-    if (!name) return
-    root.creatingNew = false
-    root.launchSession(name)
+  function submitForm() {
+    var value = formInput.text.trim()
+    if (!value) return
+    var mode = root.formMode
+    root.formMode = ""
+    if (mode === "machine") {
+      Quickshell.execDetached([root.dataScript, "add", value])
+      machineListTimer.restart()
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    } else {
+      root.launchSession(root.currentTab, value)
+    }
   }
 
   function setFilter(next) {
@@ -308,6 +366,10 @@ Item {
     root.selectedIndex = index
   }
 
+  function isPrintable(event) {
+    return event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
+  }
+
   ListModel { id: displayModel }
 
   PointerMoveGate {
@@ -325,20 +387,29 @@ Item {
   }
 
   Process {
-    id: machineListProc
-    command: ["herdr", "machine", "list", "--json"]
+    id: attachedProc
+    command: [root.dataScript, "attached"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.parseMachines(text)
+      onStreamFinished: root.parseAttached(text)
     }
   }
 
   Process {
-    id: machineStatusProc
-    command: ["herdr", "machine", "status", "--json"]
+    id: machineListProc
+    command: [root.dataScript, "list"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.parseMachineStatus(text)
+      onStreamFinished: root.parseMachineList(text)
+    }
+  }
+
+  Process {
+    id: machinesProc
+    command: [root.dataScript, "machines"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.parseMachines(text)
     }
   }
 
@@ -346,7 +417,21 @@ Item {
     id: refreshTimer
     interval: 350
     repeat: false
-    onTriggered: root.refreshSessions()
+    onTriggered: root.refreshLocal()
+  }
+
+  Timer {
+    id: remoteRefreshTimer
+    interval: 1500
+    repeat: false
+    onTriggered: if (!machinesProc.running) machinesProc.running = true
+  }
+
+  Timer {
+    id: machineListTimer
+    interval: 300
+    repeat: false
+    onTriggered: if (!machineListProc.running) machineListProc.running = true
   }
 
   PanelWindow {
@@ -384,47 +469,68 @@ Item {
       Item {
         id: keyCatcher
         anchors.fill: parent
-        z: root.deleteTargetSession !== "" ? 20 : 0
+        z: root.pendingConfirm ? 20 : 0
         focus: true
 
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
           if (confirmDialog.opened) {
-            if (confirmDialog.handleKey(event)) event.accepted = true
+            // h, j, k and l move between the buttons, like the arrow keys.
+            var bare = !event.modifiers || event.modifiers === Qt.ShiftModifier
+            var vim = [Qt.Key_H, Qt.Key_J, Qt.Key_K, Qt.Key_L].indexOf(event.key) !== -1
+            if (bare && vim) confirmDialog.selectedIndex = confirmDialog.selectedIndex === 0 ? 1 : 0
+            else if (!confirmDialog.handleKey(event)) return
+            event.accepted = true
             return
           }
 
+          var plain = !event.modifiers || event.modifiers === Qt.ShiftModifier
+          event.accepted = true
+
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) root.setFilter("")
+            else if (root.searching) root.searching = false
             else root.dismiss()
-            event.accepted = true
-          } else if (Util.editsFilter(event, root.filterText)) {
-            root.setFilter(Util.editedFilter(event, root.filterText))
-            event.accepted = true
           } else if (event.key === Qt.Key_Up) {
             root.select(-1)
-            event.accepted = true
           } else if (event.key === Qt.Key_Down) {
             root.select(1)
-            event.accepted = true
+          } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Backtab) {
+            root.switchTab(-1)
+          } else if (event.key === Qt.Key_Right || event.key === Qt.Key_Tab) {
+            root.switchTab(1)
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             root.activate(root.selectedRow())
-            event.accepted = true
-          } else if (event.key === Qt.Key_Delete || (event.key === Qt.Key_D && !event.modifiers && !root.filterText)) {
+          } else if (root.searching) {
+            // While searching, letters go into the search; arrows and Enter still work.
+            if (Util.editsFilter(event, root.filterText)) root.setFilter(Util.editedFilter(event, root.filterText))
+            else if (event.key === Qt.Key_Backspace) root.searching = false
+            else if (root.isPrintable(event)) root.setFilter(root.filterText + event.text)
+            else event.accepted = false
+          } else if (event.key === Qt.Key_Slash) {
+            root.searching = true
+          } else if (event.key === Qt.Key_J && plain) {
+            root.select(1)
+          } else if (event.key === Qt.Key_K && plain) {
+            root.select(-1)
+          } else if (event.key === Qt.Key_H && plain) {
+            root.switchTab(-1)
+          } else if (event.key === Qt.Key_L && plain) {
+            root.switchTab(1)
+          } else if (event.key === Qt.Key_Delete || (event.key === Qt.Key_D && plain)) {
             root.requestDeleteSession(root.selectedRow())
-            event.accepted = true
-          } else if (event.key === Qt.Key_S && !event.modifiers && !root.filterText) {
+          } else if (event.key === Qt.Key_S && plain) {
             root.stopSession(root.selectedRow())
-            event.accepted = true
-          } else if (event.key === Qt.Key_N && !event.modifiers && !root.filterText) {
-            root.startCreateNew()
-            event.accepted = true
-          } else if (event.key === Qt.Key_R && !event.modifiers && !root.filterText) {
-            root.refreshSessions()
-            event.accepted = true
-          } else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
-            root.setFilter(root.filterText + event.text)
-            event.accepted = true
+          } else if (event.key === Qt.Key_N && plain) {
+            root.startForm("session")
+          } else if (event.key === Qt.Key_A && plain) {
+            root.startForm("machine")
+          } else if (event.key === Qt.Key_X && plain) {
+            root.requestRemoveMachine()
+          } else if (event.key === Qt.Key_R && plain) {
+            root.refreshAll()
+          } else {
+            event.accepted = false
           }
         }
 
@@ -432,9 +538,12 @@ Item {
           id: confirmDialog
           anchors.fill: parent
           z: 10
-          opened: root.deleteTargetSession !== ""
-          message: "Delete session “" + root.deleteTargetSession + "”?"
-          confirmText: "Delete"
+          opened: root.pendingConfirm !== null
+          message: !root.pendingConfirm ? ""
+            : root.pendingConfirm.kind === "remove"
+              ? "Stop listing “" + root.pendingConfirm.name + "”? Its sessions keep running."
+              : "Delete session “" + root.pendingConfirm.name + "”" + (root.pendingConfirm.target ? " on " + root.currentTab.label : "") + "?"
+          confirmText: root.pendingConfirm && root.pendingConfirm.kind === "remove" ? "Remove" : "Delete"
           background: root.background
           foreground: root.foreground
           scrim: root.scrim
@@ -442,8 +551,8 @@ Item {
           selectedText: root.selectedText
           fontFamily: root.fontFamily
           cornerRadius: root.cornerRadius
-          onCanceled: root.cancelDelete()
-          onConfirmed: root.executeDeleteSession()
+          onCanceled: root.cancelConfirm()
+          onConfirmed: root.executeConfirm()
         }
       }
 
@@ -454,7 +563,7 @@ Item {
         anchors.bottomMargin: card.contentBottomInset
         anchors.leftMargin: card.contentLeftInset
 
-        // Header: live filter text on the left, session count on the right
+        // Header: search text on the left, this tab's session count on the right
         Item {
           id: header
           anchors.left: parent.left
@@ -468,9 +577,11 @@ Item {
             anchors.right: countText.left
             anchors.rightMargin: root.contentSpacing
             anchors.verticalCenter: parent.verticalCenter
-            text: root.creatingNew ? "New session" : (root.filterText || "Search sessions…")
+            text: root.formMode === "session" ? "New session on " + (root.currentTab ? root.currentTab.label : "")
+              : root.formMode === "machine" ? "Add a machine"
+              : root.filterText || (root.searching ? "Search…" : "Herdr sessions")
             color: root.foreground
-            opacity: root.filterText || root.creatingNew ? 1 : 0.58
+            opacity: root.filterText || root.formMode || !root.searching ? 1 : 0.58
             font.family: root.fontFamily
             font.pixelSize: Style.font.heading
             elide: Text.ElideRight
@@ -480,9 +591,9 @@ Item {
             id: countText
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            text: root.sessions.length + (root.sessions.length === 1 ? " session" : " sessions")
-              + (root.machines.length === 0 ? ""
-                : " · " + root.machines.length + (root.machines.length === 1 ? " machine" : " machines"))
+            readonly property var tab: root.currentTab
+            text: !tab ? "" : !tab.loaded ? "checking…" : !tab.ok ? "unreachable"
+              : tab.sessions.length + (tab.sessions.length === 1 ? " session" : " sessions")
             color: root.foreground
             opacity: 0.5
             font.family: root.fontFamily
@@ -490,11 +601,58 @@ Item {
           }
         }
 
+        // One tab per machine, this computer first
+        Row {
+          id: tabs
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: header.bottom
+          anchors.topMargin: root.contentSpacing
+          height: root.tabsHeight
+          spacing: Style.space(6)
+          clip: true
+
+          Repeater {
+            model: root.tabCount()
+
+            Rectangle {
+              id: tabChip
+              required property int index
+              readonly property var tab: root.tabAt(index)
+              readonly property bool current: index === root.tabIndex
+
+              width: tabLabel.implicitWidth + Style.spacing.controlPaddingX * 2
+              height: root.tabsHeight
+              radius: root.cornerRadius
+              color: current ? root.selectedBackground : "transparent"
+              border.width: Style.normalBorderWidth
+              border.color: Util.alpha(root.foreground, current ? 0.5 : 0.18)
+
+              Text {
+                id: tabLabel
+                anchors.centerIn: parent
+                textFormat: Text.PlainText
+                text: tabChip.tab ? tabChip.tab.label + (tabChip.tab.loaded && !tabChip.tab.ok ? " !" : "") : ""
+                color: tabChip.current ? root.selectedText : root.foreground
+                opacity: tabChip.current ? 1 : (tabChip.tab && tabChip.tab.loaded && !tabChip.tab.ok ? 0.4 : 0.65)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.setTab(tabChip.index)
+              }
+            }
+          }
+        }
+
         Rectangle {
           id: headerRule
           anchors.left: parent.left
           anchors.right: parent.right
-          anchors.top: header.bottom
+          anchors.top: tabs.bottom
           anchors.topMargin: root.contentSpacing
           height: Style.normalBorderWidth
           color: Util.alpha(root.border, 0.28)
@@ -512,7 +670,7 @@ Item {
           ListView {
             id: sessionList
             anchors.fill: parent
-            visible: !root.creatingNew
+            visible: root.formMode === ""
             model: displayModel
             clip: true
             spacing: Style.space(4)
@@ -522,22 +680,22 @@ Item {
               id: row
               required property int index
               required property bool isNewButton
-              required property bool isMachine
               required property string name
               required property bool running
               required property bool isDefault
               required property string sessionDir
-              required property string target
-              required property string remoteSession
-              required property string status
+              required property bool attachedHere
 
               readonly property bool hasCursor: root.cursorActive && index === root.selectedIndex
               readonly property color textColor: hasCursor ? root.selectedText : root.foreground
+              // Lit when a herdr window on this computer shows the session; dim otherwise.
+              readonly property real nameOpacity: isNewButton || attachedHere || hasCursor ? 1 : (running ? 0.62 : 0.42)
 
               width: ListView.view.width
               height: root.rowHeight
               radius: root.cornerRadius
-              color: hasCursor ? root.selectedBackground : "transparent"
+              color: hasCursor ? root.selectedBackground
+                : attachedHere ? Util.alpha(Color.accent, 0.08) : "transparent"
 
               MouseArea {
                 anchors.fill: parent
@@ -567,6 +725,7 @@ Item {
                   height: width
                   radius: width / 2
                   color: row.running ? Color.accent : "transparent"
+                  opacity: row.attachedHere ? 1 : 0.6
                   border.width: row.running ? 0 : Style.normalBorderWidth
                   border.color: Util.alpha(root.foreground, 0.45)
                 }
@@ -596,14 +755,16 @@ Item {
                     textFormat: Text.PlainText
                     text: row.isNewButton ? "New session" : row.name
                     color: row.textColor
+                    opacity: row.nameOpacity
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.title
+                    font.bold: row.attachedHere
                   }
 
                   Text {
-                    visible: row.isDefault || row.isMachine
+                    visible: row.isDefault
                     anchors.verticalCenter: parent.verticalCenter
-                    text: row.isMachine ? "remote" : "default"
+                    text: "default"
                     color: root.foreground
                     opacity: 0.5
                     font.family: root.fontFamily
@@ -614,9 +775,11 @@ Item {
                 Text {
                   textFormat: Text.PlainText
                   width: parent.width
-                  text: row.isNewButton ? "Create and launch a new herdr session" : row.sessionDir
+                  text: row.isNewButton
+                    ? "Create and open a new herdr session on " + (root.currentTab ? root.currentTab.label : "")
+                    : row.sessionDir
                   color: root.foreground
-                  opacity: 0.5
+                  opacity: 0.45
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideMiddle
@@ -638,9 +801,9 @@ Item {
                   visible: !row.hasCursor
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
-                  text: row.isMachine ? row.status : (row.running ? "running" : "stopped")
+                  text: row.attachedHere ? "open here" : row.running ? "running" : "stopped"
                   color: row.running ? Color.accent : root.foreground
-                  opacity: row.running ? 0.9 : 0.4
+                  opacity: row.attachedHere ? 1 : row.running ? 0.7 : 0.4
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
@@ -656,7 +819,7 @@ Item {
                   spacing: Style.space(2)
 
                   Button {
-                    visible: row.running && !row.isMachine
+                    visible: row.running
                     iconText: ""
                     tooltipText: "Stop (s)"
                     foreground: root.foreground
@@ -664,7 +827,7 @@ Item {
                   }
 
                   Button {
-                    visible: !row.running && !row.isDefault && !row.isMachine
+                    visible: !row.running && !row.isDefault
                     iconText: ""
                     tooltipText: "Delete (d)"
                     foreground: root.foreground
@@ -682,19 +845,43 @@ Item {
             }
           }
 
-          // Empty filter result
-          Text {
+          // Empty tab: still checking, unreachable, or nothing matches the search
+          Column {
             anchors.centerIn: parent
-            visible: !root.creatingNew && displayModel.count === 0
-            textFormat: Text.PlainText
-            text: "No sessions match “" + root.filterText + "”"
-            color: root.foreground
-            opacity: 0.7
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.title
+            width: parent.width - root.rowPadding * 2
+            spacing: Style.space(6)
+            visible: root.formMode === "" && displayModel.count === 0
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              textFormat: Text.PlainText
+              readonly property var tab: root.currentTab
+              text: root.filterText ? "No sessions match “" + root.filterText + "”"
+                : !tab ? "" : !tab.loaded ? "Asking " + tab.label + "…"
+                : !tab.ok ? "Couldn't reach " + tab.target : "No sessions"
+              color: root.foreground
+              opacity: 0.7
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              textFormat: Text.PlainText
+              wrapMode: Text.Wrap
+              visible: text.length > 0
+              text: root.currentTab && root.currentTab.loaded && !root.currentTab.ok && !root.filterText
+                ? root.currentTab.error : ""
+              color: root.foreground
+              opacity: 0.45
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
           }
 
-          // New session form
+          // New session / add machine form
           Column {
             anchors.left: parent.left
             anchors.right: parent.right
@@ -702,11 +889,15 @@ Item {
             anchors.leftMargin: root.rowPadding
             anchors.rightMargin: root.rowPadding
             anchors.topMargin: root.rowPadding
-            visible: root.creatingNew
+            visible: root.formMode !== ""
             spacing: Style.spacing.lg
 
             Text {
-              text: "Session name"
+              text: root.formMode === "machine"
+                ? "SSH target (user@host or a Host from ~/.ssh/config). It needs SSH without a password prompt, and herdr."
+                : "Session name"
+              width: parent.width
+              wrapMode: Text.Wrap
               color: root.foreground
               opacity: 0.58
               font.family: root.fontFamily
@@ -714,14 +905,14 @@ Item {
             }
 
             TextField {
-              id: newSessionInput
+              id: formInput
               width: parent.width
-              placeholderText: "e.g. project-x"
+              placeholderText: root.formMode === "machine" ? "e.g. you@buildbox" : "e.g. project-x"
               foreground: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
-              onAccepted: root.submitNewSession()
-              Keys.onEscapePressed: root.cancelCreateNew()
+              onAccepted: root.submitForm()
+              Keys.onEscapePressed: root.cancelForm()
             }
 
             Row {
@@ -733,15 +924,15 @@ Item {
                 bordered: true
                 fontFamily: root.fontFamily
                 foreground: root.foreground
-                onClicked: root.cancelCreateNew()
+                onClicked: root.cancelForm()
               }
 
               Button {
-                text: "Create"
+                text: root.formMode === "machine" ? "Add" : "Create"
                 bordered: true
                 fontFamily: root.fontFamily
                 foreground: root.selectedText
-                onClicked: root.submitNewSession()
+                onClicked: root.submitForm()
               }
             }
           }
@@ -755,9 +946,9 @@ Item {
           anchors.bottom: parent.bottom
           height: root.footerHeight
           verticalAlignment: Text.AlignBottom
-          text: root.creatingNew
-            ? "enter create · esc cancel"
-            : "↑↓ select · enter open · n new · s stop · d delete · esc close"
+          text: root.formMode ? "enter " + (root.formMode === "machine" ? "add" : "create") + " · esc cancel"
+            : root.searching ? "type to search · ↑↓ select · enter open · esc stop searching"
+            : "h l machine · j k move · enter open · / search · n new · s stop · d delete · a x add/remove machine"
           color: root.foreground
           opacity: 0.45
           font.family: root.fontFamily

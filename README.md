@@ -36,32 +36,38 @@ hyprctl reload
 
 ### Step 3: Use It
 
-Press **`Super + Ctrl + Enter`**:
+Press **`Super + Ctrl + Enter`**. Each machine has a tab, this computer first, named by host name as herdr shows it. Every herdr session on it is listed, running or stopped. A session that a herdr window on this computer is showing is lit and marked **open here**; the rest are dimmer.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` | Select session |
-| `Enter` | Launch / attach to session |
-| `n` | Create new session |
-| `s` | Stop running session |
-| `d` / `Delete` | Delete stopped session |
-| `Esc` | Clear filter / Close picker |
+| `h` / `l` (or `←` / `→`, `Tab`) | Previous / next machine |
+| `j` / `k` (or `↓` / `↑`) | Next / previous session |
+| `Enter` | Open the session (a stopped one starts again) |
+| `/` | Search this machine's sessions; `Esc` leaves the search |
+| `n` | New session on this machine |
+| `s` | Stop the session |
+| `d` / `Delete` | Delete a stopped session |
+| `a` / `x` | Add a machine / remove this machine's tab |
+| `r` | Refresh |
+| `h` `j` `k` `l` (in a confirm box) | Move between Cancel and Delete / Remove |
+| `Esc` | Close |
 
 ---
 
-### Remote Machines
+### Other Machines
 
-SSH machines saved in herdr (herdr 0.9 or newer) show up below your local sessions, marked **remote**, with whether they can be reached right now:
+The picker looks for sessions on every machine in `~/.config/herdr-sessions/machines`, one SSH target per line (`user@host` or a `Host` from `~/.ssh/config`), plus any machine saved with `herdr machine add`:
 
-```bash
-herdr machine add you@buildbox
-herdr machine add you@buildbox --remote-session agents   # another session on the same host
+```
+# ~/.config/herdr-sessions/machines
+you@buildbox
+desktop
 ```
 
-- A saved machine points at one session on its host, so each one is a row. Save the host again with `--remote-session <name>` to list another of its sessions.
-- `Enter` opens it in a terminal with `herdr --remote <target> [--session <name>]`. If SSH needs a passphrase or a new host key, it asks there.
-- Typing filters remote rows by label, SSH target or session name.
-- Stop and delete stay local: herdr doesn't manage sessions on saved machines. Disabled machines are left out.
+- `a` in the picker adds a line; `x` removes the current machine's.
+- This computer is skipped, so one list can be shared by all your machines.
+- Each machine needs SSH that doesn't prompt (a key or agent) and herdr; `~/.local/bin`, where herdr installs itself, is searched.
+- Sessions are read with `herdr session list --json` over SSH, all machines at once. Opening one runs `herdr --remote <target> [--session <name>]` in a terminal; stop and delete run `herdr session stop|delete` over SSH.
 
 ---
 

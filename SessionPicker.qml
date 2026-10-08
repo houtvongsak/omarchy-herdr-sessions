@@ -42,6 +42,8 @@ Item {
   property string keyPreset: "default"
   property bool typeToSearch: true
   property var keymap: root.presetKeys("default")
+  // keys.json as read, so switching presets keeps any custom keys in it.
+  property var keysConfig: ({})
   // Keys that clash or can never fire, explained in the footer so a typo isn't silent.
   property string keysWarning: ""
   // No keys.json yet (a first run, or an update from before it existed): ask once.
@@ -426,15 +428,16 @@ Item {
     if (name === "vim") {
       return { down: ["j", "down"], up: ["k", "up"], nextMachine: ["l", "tab", "right"],
         prevMachine: ["h", "shift+tab", "left"], open: ["return"], search: ["/"], newSession: ["n"], stop: ["s"],
-        delete: ["d", "delete"], addMachine: ["a"], removeMachine: ["x"], refresh: ["r"] }
+        delete: ["d", "delete"], addMachine: ["a"], removeMachine: ["x"], refresh: ["r"], switchKeys: ["ctrl+k"] }
     }
     return { down: ["down"], up: ["up"], nextMachine: ["tab", "right"], prevMachine: ["shift+tab", "left"],
       open: ["return"], search: [], newSession: ["ctrl+n"], stop: ["ctrl+s"], delete: ["ctrl+d", "delete"],
-      addMachine: ["ctrl+a"], removeMachine: ["ctrl+x"], refresh: ["ctrl+r"] }
+      addMachine: ["ctrl+a"], removeMachine: ["ctrl+x"], refresh: ["ctrl+r"], switchKeys: ["ctrl+k"] }
   }
 
   function loadKeys(raw) {
     var config = root.parseJson(raw, {}, "keys.json")
+    root.keysConfig = config
     var preset = config.preset === "vim" ? "vim" : "default"
     var map = root.presetKeys(preset)
     var overrides = config.keys || {}
@@ -479,7 +482,20 @@ Item {
   ]
 
   function chooseKeys(preset) {
-    var json = JSON.stringify({ preset: preset }, null, 2)
+    root.saveKeys({ preset: preset })
+  }
+
+  // Flips between the presets, keeping the rest of keys.json as it is.
+  function switchKeys() {
+    var config = JSON.parse(JSON.stringify(root.keysConfig || {}))
+    config.preset = root.keyPreset === "vim" ? "default" : "vim"
+    root.saveKeys(config)
+    root.setFilter("")
+    root.searching = false
+  }
+
+  function saveKeys(config) {
+    var json = JSON.stringify(config, null, 2)
     Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1"', "sh",
       root.keysPath, json])
     root.loadKeys(json)
@@ -554,6 +570,7 @@ Item {
       case "addMachine": root.startForm("machine"); return true
       case "removeMachine": root.requestRemoveMachine(); return true
       case "refresh": root.refreshAll(); return true
+      case "switchKeys": root.switchKeys(); return true
     }
     return false
   }
@@ -583,6 +600,7 @@ Item {
     add("stop", ["stop"])
     add("delete", ["delete"])
     add("machines", ["addMachine", "removeMachine"])
+    add("keys", ["switchKeys"])
     return parts.join(" · ")
   }
 
@@ -819,11 +837,33 @@ Item {
           }
         }
 
+        // Which key preset is on; click (or the switchKeys key) to flip it.
+        Text {
+          id: keysChip
+          anchors.right: parent.right
+          anchors.verticalCenter: tabs.verticalCenter
+          text: "keys: " + root.keyPreset
+          color: root.foreground
+          opacity: keysMouse.containsMouse ? 0.9 : 0.5
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+
+          MouseArea {
+            id: keysMouse
+            anchors.fill: parent
+            anchors.margins: -Style.space(6)
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.switchKeys()
+          }
+        }
+
         // One tab per machine, this computer first
         Row {
           id: tabs
           anchors.left: parent.left
-          anchors.right: parent.right
+          anchors.right: keysChip.left
+          anchors.rightMargin: root.contentSpacing
           anchors.top: header.bottom
           anchors.topMargin: root.contentSpacing
           height: root.tabsHeight

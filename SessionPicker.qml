@@ -428,11 +428,12 @@ Item {
     if (name === "vim") {
       return { down: ["j", "down"], up: ["k", "up"], nextMachine: ["l", "tab", "right"],
         prevMachine: ["h", "shift+tab", "left"], open: ["return"], search: ["/"], newSession: ["n"], stop: ["s"],
-        delete: ["d", "delete"], addMachine: ["a"], removeMachine: ["x"], refresh: ["r"], switchKeys: ["ctrl+k"] }
+        delete: ["d", "delete"], addMachine: ["a"], removeMachine: ["x"], refresh: ["r"], switchKeys: ["ctrl+k"],
+        editKeys: [] }
     }
     return { down: ["down"], up: ["up"], nextMachine: ["tab", "right"], prevMachine: ["shift+tab", "left"],
       open: ["return"], search: [], newSession: ["ctrl+n"], stop: ["ctrl+s"], delete: ["ctrl+d", "delete"],
-      addMachine: ["ctrl+a"], removeMachine: ["ctrl+x"], refresh: ["ctrl+r"], switchKeys: ["ctrl+k"] }
+      addMachine: ["ctrl+a"], removeMachine: ["ctrl+x"], refresh: ["ctrl+r"], switchKeys: ["ctrl+k"], editKeys: [] }
   }
 
   function loadKeys(raw) {
@@ -494,6 +495,16 @@ Item {
     root.searching = false
   }
 
+  // Opens keys.json in the editor chosen in Omarchy, writing the current preset first if
+  // there's no file yet. Saved changes apply while the picker is open or closed.
+  function editKeys() {
+    var json = JSON.stringify(root.keysConfig && root.keysConfig.preset ? root.keysConfig : { preset: root.keyPreset }, null, 2)
+    root.dismiss()
+    Quickshell.execDetached(["sh", "-c",
+      '[ -f "$1" ] || { mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1"; }; exec omarchy-launch-editor "$1"',
+      "sh", root.keysPath, json])
+  }
+
   function saveKeys(config) {
     var json = JSON.stringify(config, null, 2)
     Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1"', "sh",
@@ -530,6 +541,7 @@ Item {
       case Qt.Key_PageUp: return "pageup"
       case Qt.Key_PageDown: return "pagedown"
     }
+    if (event.key >= Qt.Key_F1 && event.key <= Qt.Key_F35) return "f" + (event.key - Qt.Key_F1 + 1)
     if (event.key >= Qt.Key_A && event.key <= Qt.Key_Z) return String.fromCharCode(event.key).toLowerCase()
     if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9) return String.fromCharCode(event.key)
     if (event.text && event.text.length === 1 && event.text.charCodeAt(0) > 32) return event.text.toLowerCase()
@@ -571,6 +583,7 @@ Item {
       case "removeMachine": root.requestRemoveMachine(); return true
       case "refresh": root.refreshAll(); return true
       case "switchKeys": root.switchKeys(); return true
+      case "editKeys": root.editKeys(); return true
     }
     return false
   }
@@ -838,7 +851,7 @@ Item {
           }
         }
 
-        // Which key preset is on; click (or the switchKeys key) to flip it.
+        // Which key preset is on; click to open keys.json (the switchKeys key flips it).
         Text {
           id: keysChip
           anchors.right: parent.right
@@ -855,7 +868,7 @@ Item {
             anchors.margins: -Style.space(6)
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.switchKeys()
+            onClicked: root.editKeys()
           }
         }
 

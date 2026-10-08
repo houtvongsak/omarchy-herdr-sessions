@@ -55,7 +55,7 @@ Type to search the current machine's sessions. The keys:
 
 #### Your own keys
 
-The first time the picker opens (or after updating from a version without this), it asks once: **Default** (type to search) or **Vim** (`hjkl`, `/` to search). Your answer is saved to `~/.config/herdr-sessions/keys.json`. Switch any time with `Ctrl+K` or by clicking **keys:** next to the tabs. Edit the file to change any action; the picker picks it up as soon as you save, and the footer points out keys that clash or can't fire.
+The first time the picker opens (or after updating from a version without this), it asks once: **Default** (type to search) or **Vim** (`hjkl`, `/` to search). Your answer is saved to `~/.config/herdr-sessions/keys.json`. Switch any time with `Ctrl+K`. Click **keys:** next to the tabs to open the file in your editor and change any action; the picker picks it up as soon as you save, and the footer points out keys that clash or can't fire.
 
 ```json
 {
@@ -68,8 +68,8 @@ The first time the picker opens (or after updating from a version without this),
 ```
 
 - **Presets:** `default` (above, type to search) or `vim` (`j`/`k` sessions, `h`/`l` machines, `/` to search, and single letters `n` `s` `d` `a` `x` `r` for the actions).
-- **Actions:** `up`, `down`, `nextMachine`, `prevMachine`, `open`, `search`, `newSession`, `stop`, `delete`, `addMachine`, `removeMachine`, `refresh`, `switchKeys`.
-- **Keys:** a letter or digit, a symbol like `/`, or `up` `down` `left` `right` `tab` `return` `delete` `backspace` `space` `home` `end` `pageup` `pagedown`, with any of `ctrl+` `alt+` `shift+` in front.
+- **Actions:** `up`, `down`, `nextMachine`, `prevMachine`, `open`, `search`, `newSession`, `stop`, `delete`, `addMachine`, `removeMachine`, `refresh`, `switchKeys`, `editKeys` (unbound by default; the **keys:** label does it).
+- **Keys:** a letter or digit, a symbol like `/`, or `up` `down` `left` `right` `tab` `return` `delete` `backspace` `space` `home` `end` `pageup` `pagedown` `f1`…`f12`, with any of `ctrl+` `alt+` `shift+` in front.
 - `"typeToSearch": true` keeps type-to-search with any preset. Avoid binding bare letters then, as they'd only ever type.
 
 ---

@@ -32,6 +32,16 @@ Item {
   property string formMode: ""
   // What the confirm dialog is about: {kind: "delete"|"remove", target, name}.
   property var pendingConfirm: null
+  // Why the form's value was refused, shown under the field.
+  property string formError: ""
+  // This computer's herdr version, to compare with each machine's.
+  property string localVersion: ""
+
+  // Key bindings: a preset plus per-action overrides, read from keys.json (see README).
+  readonly property string keysPath: root.home + "/.config/herdr-sessions/keys.json"
+  property string keyPreset: "default"
+  property bool typeToSearch: true
+  property var keymap: root.presetKeys("default")
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string dataScript: decodeURIComponent(String(Qt.resolvedUrl("bin/herdr-sessions-data")).replace(/^file:\/\//, ""))
@@ -57,7 +67,8 @@ Item {
   property int rowPadding: Style.spacing.rowPaddingX
   property int markerWidth: Style.space(16)
   property int cardWidth: Math.min(Style.space(680), panel.width - Style.gapsOut * 2)
-  property int listRows: Math.max(4, displayModel.count)
+  // Sized for the fullest tab, so the card doesn't jump when switching machines.
+  property int listRows: Math.max(4, root.maxRows())
   property int contentHeight: root.headerHeight + root.tabsHeight + Style.normalBorderWidth + root.footerHeight
     + root.contentSpacing * 4 + root.listRows * root.rowHeight + (root.listRows - 1) * Style.space(4)
   property int cardHeight: Math.min(card.contentTopInset + card.contentBottomInset + root.contentHeight,
@@ -127,11 +138,13 @@ Item {
   function parseMachineList(raw) {
     var data = root.parseJson(raw, {}, "the machine list")
     root.hostName = data.host || root.hostName
+    root.localVersion = data.version || root.localVersion
     var previous = {}
     for (var i = 0; i < root.machines.length; i++) previous[root.machines[i].key] = root.machines[i]
     root.machines = (data.machines || []).map(function(m) {
       var old = previous[m.key]
-      return old ? old : { target: m.target, key: m.key, label: m.target, loaded: false, ok: false, error: "", sessions: [] }
+      return old ? old : { target: m.target, key: m.key, label: m.target, version: "", loaded: false, ok: false, error: "",
+        sessions: [] }
     })
     if (root.tabIndex > root.machines.length) root.tabIndex = root.machines.length
     root.rebuildDisplay()
@@ -145,8 +158,8 @@ Item {
     root.machines = root.machines.map(function(m) {
       var row = byKey[m.key]
       if (!row) return m
-      return { target: row.target, key: row.key, label: row.label, loaded: true, ok: row.ok === true,
-        error: row.error || "", sessions: row.sessions || [] }
+      return { target: row.target, key: row.key, label: row.label, version: row.version || "", loaded: true,
+        ok: row.ok === true, error: row.error || "", sessions: row.sessions || [] }
     })
     root.rebuildDisplay()
   }
@@ -165,17 +178,28 @@ Item {
 
   function tabAt(index) {
     if (index === 0) {
-      return { local: true, key: "", target: "", label: root.hostName || "This computer", loaded: true, ok: true,
-        error: "", sessions: root.sessions }
+      return { local: true, key: "", target: "", label: root.hostName || "This computer", version: root.localVersion,
+        loaded: true, ok: true, error: "", sessions: root.sessions }
     }
     var m = root.machines[index - 1]
     if (!m) return null
-    return { local: false, key: m.key, target: m.target, label: m.label, loaded: m.loaded, ok: m.ok, error: m.error,
-      sessions: m.sessions }
+    return { local: false, key: m.key, target: m.target, label: m.label, version: m.version, loaded: m.loaded, ok: m.ok,
+      error: m.error, sessions: m.sessions }
   }
 
   function tabCount() {
     return root.machines.length + 1
+  }
+
+  function maxRows() {
+    var most = root.sessions.length
+    for (var i = 0; i < root.machines.length; i++) most = Math.max(most, root.machines[i].sessions.length)
+    return most + 1
+  }
+
+  // A client can't always attach to a server of another herdr version, so say so up front.
+  function versionMismatch(tab) {
+    return !!tab && !tab.local && tab.version !== "" && root.localVersion !== "" && tab.version !== root.localVersion
   }
 
   // Session folders on another machine are shown relative to its home, like local ones.
@@ -258,15 +282,20 @@ Item {
 
   // ---------------------------------------------------------------- actions
 
+  // If herdr fails (an SSH prompt it can't show, a version it can't attach to...), the
+  // terminal stays open so the error can be read instead of the window just vanishing.
+  readonly property string holdOnError:
+    'herdr "$@" || { code=$?; printf "\\nherdr exited with status %s. Press any key to close." "$code"; read -rsn1; }'
+
   // A stopped session starts again when it is opened: `herdr --session` starts its server,
   // and `--remote` starts the far side's.
   function launchSession(tab, name) {
     if (!tab) return
     root.dismiss()
-    var command = ["omarchy-launch-terminal", "herdr"]
-    if (!tab.local) command.push("--remote", tab.target)
-    if (name !== "default") command.push("--session", name)
-    Quickshell.execDetached(command)
+    var args = []
+    if (!tab.local) args.push("--remote", tab.target)
+    if (name !== "default") args.push("--session", name)
+    Quickshell.execDetached(["omarchy-launch-terminal", "bash", "-c", root.holdOnError, "herdr"].concat(args))
   }
 
   function stopSession(row) {
@@ -325,6 +354,7 @@ Item {
   function startForm(mode) {
     if (mode === "session" && root.currentTab && !root.currentTab.local && !root.currentTab.ok) return
     root.formMode = mode
+    root.formError = ""
     formInput.text = ""
     Qt.callLater(function() { formInput.forceActiveFocus() })
   }
@@ -338,6 +368,15 @@ Item {
     var value = formInput.text.trim()
     if (!value) return
     var mode = root.formMode
+    // The same rules the helper applies, checked here so a refusal is visible.
+    if (mode === "machine" && !/^(ssh:\/\/)?[A-Za-z0-9][A-Za-z0-9@._:-]*$/.test(value)) {
+      root.formError = "That doesn't look like an SSH target: use user@host, a Host from ~/.ssh/config, or ssh://user@host:port."
+      return
+    }
+    if (mode === "session" && (!/^[A-Za-z0-9._-]{1,64}$/.test(value) || value === "." || value === "..")) {
+      root.formError = "Use letters, numbers, dots, dashes or underscores (up to 64)."
+      return
+    }
     root.formMode = ""
     if (mode === "machine") {
       Quickshell.execDetached([root.dataScript, "add", value])
@@ -370,7 +409,150 @@ Item {
     return event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
   }
 
+  // ---------------------------------------------------------------- keys
+
+  // "default" keeps type-to-search, so letters never trigger anything; "vim" frees the
+  // letters for actions and searches after "/". Either can be changed action by action.
+  function presetKeys(name) {
+    if (name === "vim") {
+      return { down: ["j", "down"], up: ["k", "up"], nextMachine: ["l", "tab", "right"],
+        prevMachine: ["h", "shift+tab", "left"], open: ["return"], search: ["/"], newSession: ["n"], stop: ["s"],
+        delete: ["d", "delete"], addMachine: ["a"], removeMachine: ["x"], refresh: ["r"] }
+    }
+    return { down: ["down"], up: ["up"], nextMachine: ["tab", "right"], prevMachine: ["shift+tab", "left"],
+      open: ["return"], search: [], newSession: ["ctrl+n"], stop: ["ctrl+s"], delete: ["ctrl+d", "delete"],
+      addMachine: ["ctrl+a"], removeMachine: ["ctrl+x"], refresh: ["ctrl+r"] }
+  }
+
+  function loadKeys(raw) {
+    var config = root.parseJson(raw, {}, "keys.json")
+    var preset = config.preset === "vim" ? "vim" : "default"
+    var map = root.presetKeys(preset)
+    var overrides = config.keys || {}
+    for (var action in overrides) {
+      if (!map.hasOwnProperty(action)) {
+        console.warn("herdr-sessions: keys.json has an unknown action:", action)
+        continue
+      }
+      var value = overrides[action]
+      map[action] = Array.isArray(value) ? value : [value]
+    }
+    for (var name in map) map[name] = map[name].map(root.normalizeSpec)
+    root.keyPreset = preset
+    root.typeToSearch = typeof config.typeToSearch === "boolean" ? config.typeToSearch : preset !== "vim"
+    root.keymap = map
+  }
+
+  // "Ctrl+Shift+Tab", "shift+ctrl+tab" and "ctrl+shift+tab" all become "ctrl+shift+tab".
+  function normalizeSpec(spec) {
+    var parts = String(spec).toLowerCase().split("+").map(function(part) { return part.trim() })
+    var key = parts.pop()
+    var aliases = { enter: "return", esc: "escape", del: "delete", backtab: "tab", pgup: "pageup", pgdown: "pagedown" }
+    var mods = ["ctrl", "alt", "shift"].filter(function(mod) { return parts.indexOf(mod) !== -1 })
+    return mods.concat([aliases[key] || key]).join("+")
+  }
+
+  function eventKeyName(event) {
+    switch (event.key) {
+      case Qt.Key_Up: return "up"
+      case Qt.Key_Down: return "down"
+      case Qt.Key_Left: return "left"
+      case Qt.Key_Right: return "right"
+      case Qt.Key_Tab:
+      case Qt.Key_Backtab: return "tab"
+      case Qt.Key_Return:
+      case Qt.Key_Enter: return "return"
+      case Qt.Key_Delete: return "delete"
+      case Qt.Key_Backspace: return "backspace"
+      case Qt.Key_Space: return "space"
+      case Qt.Key_Home: return "home"
+      case Qt.Key_End: return "end"
+      case Qt.Key_PageUp: return "pageup"
+      case Qt.Key_PageDown: return "pagedown"
+    }
+    if (event.key >= Qt.Key_A && event.key <= Qt.Key_Z) return String.fromCharCode(event.key).toLowerCase()
+    if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9) return String.fromCharCode(event.key)
+    if (event.text && event.text.length === 1 && event.text.charCodeAt(0) > 32) return event.text.toLowerCase()
+    return ""
+  }
+
+  function eventSpec(event) {
+    var name = root.eventKeyName(event)
+    if (!name) return ""
+    // Shift is part of a symbol like "?" already, so it only counts on named keys and letters.
+    var symbol = name.length === 1 && !/[a-z0-9]/.test(name)
+    var mods = []
+    if (event.modifiers & Qt.ControlModifier) mods.push("ctrl")
+    if (event.modifiers & Qt.AltModifier) mods.push("alt")
+    if ((event.modifiers & Qt.ShiftModifier || event.key === Qt.Key_Backtab) && !symbol) mods.push("shift")
+    return mods.concat([name]).join("+")
+  }
+
+  function actionFor(spec) {
+    if (!spec) return ""
+    for (var action in root.keymap) {
+      if (root.keymap[action].indexOf(spec) !== -1) return action
+    }
+    return ""
+  }
+
+  function runAction(action) {
+    switch (action) {
+      case "down": root.select(1); return true
+      case "up": root.select(-1); return true
+      case "nextMachine": root.switchTab(1); return true
+      case "prevMachine": root.switchTab(-1); return true
+      case "open": root.activate(root.selectedRow()); return true
+      case "search": root.searching = true; return true
+      case "newSession": root.startForm("session"); return true
+      case "stop": root.stopSession(root.selectedRow()); return true
+      case "delete": root.requestDeleteSession(root.selectedRow()); return true
+      case "addMachine": root.startForm("machine"); return true
+      case "removeMachine": root.requestRemoveMachine(); return true
+      case "refresh": root.refreshAll(); return true
+    }
+    return false
+  }
+
+  function keyLabel(spec) {
+    var labels = { down: "↓", up: "↑", left: "←", right: "→", "return": "enter", "delete": "del" }
+    return labels[spec] || spec
+  }
+
+  // The first key bound to an action, for hints and tooltips.
+  function hint(action) {
+    var keys = root.keymap[action] || []
+    return keys.length > 0 ? root.keyLabel(keys[0]) : ""
+  }
+
+  function footerHints() {
+    var parts = []
+    function add(label, actions) {
+      var keys = actions.map(root.hint).filter(function(key) { return key !== "" })
+      if (keys.length > 0) parts.push(keys.join(keys.every(function(key) { return key.length === 1 }) ? "" : "/") + " " + label)
+    }
+    add("move", ["up", "down"])
+    add("machine", ["nextMachine"])
+    add("open", ["open"])
+    if (!root.typeToSearch) add("search", ["search"])
+    add("new", ["newSession"])
+    add("stop", ["stop"])
+    add("delete", ["delete"])
+    add("machines", ["addMachine", "removeMachine"])
+    return parts.join(" · ")
+  }
+
   ListModel { id: displayModel }
+
+  FileView {
+    id: keysFile
+    path: root.keysPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.loadKeys(text())
+    onLoadFailed: root.loadKeys("")
+    onFileChanged: reload()
+  }
 
   PointerMoveGate {
     id: pointerGate
@@ -475,61 +657,32 @@ Item {
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
           if (confirmDialog.opened) {
-            // h, j, k and l move between the buttons, like the arrow keys.
+            // With the vim preset, h, j, k and l move between the buttons, like the arrow keys.
             var bare = !event.modifiers || event.modifiers === Qt.ShiftModifier
-            var vim = [Qt.Key_H, Qt.Key_J, Qt.Key_K, Qt.Key_L].indexOf(event.key) !== -1
+            var vim = root.keyPreset === "vim" && [Qt.Key_H, Qt.Key_J, Qt.Key_K, Qt.Key_L].indexOf(event.key) !== -1
             if (bare && vim) confirmDialog.selectedIndex = confirmDialog.selectedIndex === 0 ? 1 : 0
             else if (!confirmDialog.handleKey(event)) return
             event.accepted = true
             return
           }
 
-          var plain = !event.modifiers || event.modifiers === Qt.ShiftModifier
           event.accepted = true
+          // Typing goes into the search when type-to-search is on, or after the search key;
+          // everything else is looked up in the keymap.
+          var textMode = root.typeToSearch || root.searching
+          var typed = root.isPrintable(event) && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
 
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) root.setFilter("")
             else if (root.searching) root.searching = false
             else root.dismiss()
-          } else if (event.key === Qt.Key_Up) {
-            root.select(-1)
-          } else if (event.key === Qt.Key_Down) {
-            root.select(1)
-          } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Backtab) {
-            root.switchTab(-1)
-          } else if (event.key === Qt.Key_Right || event.key === Qt.Key_Tab) {
-            root.switchTab(1)
-          } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            root.activate(root.selectedRow())
-          } else if (root.searching) {
-            // While searching, letters go into the search; arrows and Enter still work.
-            if (Util.editsFilter(event, root.filterText)) root.setFilter(Util.editedFilter(event, root.filterText))
-            else if (event.key === Qt.Key_Backspace) root.searching = false
-            else if (root.isPrintable(event)) root.setFilter(root.filterText + event.text)
-            else event.accepted = false
-          } else if (event.key === Qt.Key_Slash) {
-            root.searching = true
-          } else if (event.key === Qt.Key_J && plain) {
-            root.select(1)
-          } else if (event.key === Qt.Key_K && plain) {
-            root.select(-1)
-          } else if (event.key === Qt.Key_H && plain) {
-            root.switchTab(-1)
-          } else if (event.key === Qt.Key_L && plain) {
-            root.switchTab(1)
-          } else if (event.key === Qt.Key_Delete || (event.key === Qt.Key_D && plain)) {
-            root.requestDeleteSession(root.selectedRow())
-          } else if (event.key === Qt.Key_S && plain) {
-            root.stopSession(root.selectedRow())
-          } else if (event.key === Qt.Key_N && plain) {
-            root.startForm("session")
-          } else if (event.key === Qt.Key_A && plain) {
-            root.startForm("machine")
-          } else if (event.key === Qt.Key_X && plain) {
-            root.requestRemoveMachine()
-          } else if (event.key === Qt.Key_R && plain) {
-            root.refreshAll()
-          } else {
+          } else if (textMode && typed) {
+            root.setFilter(root.filterText + event.text)
+          } else if (textMode && Util.editsFilter(event, root.filterText)) {
+            root.setFilter(Util.editedFilter(event, root.filterText))
+          } else if (root.searching && event.key === Qt.Key_Backspace) {
+            root.searching = false
+          } else if (!root.runAction(root.actionFor(root.eventSpec(event)))) {
             event.accepted = false
           }
         }
@@ -579,9 +732,9 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             text: root.formMode === "session" ? "New session on " + (root.currentTab ? root.currentTab.label : "")
               : root.formMode === "machine" ? "Add a machine"
-              : root.filterText || (root.searching ? "Search…" : "Herdr sessions")
+              : root.filterText || (root.typeToSearch ? "Search sessions…" : root.searching ? "Search…" : "Herdr sessions")
             color: root.foreground
-            opacity: root.filterText || root.formMode || !root.searching ? 1 : 0.58
+            opacity: root.filterText || root.formMode || !(root.typeToSearch || root.searching) ? 1 : 0.58
             font.family: root.fontFamily
             font.pixelSize: Style.font.heading
             elide: Text.ElideRight
@@ -592,10 +745,13 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             readonly property var tab: root.currentTab
+            readonly property bool mismatch: root.versionMismatch(tab)
             text: !tab ? "" : !tab.loaded ? "checking…" : !tab.ok ? "unreachable"
               : tab.sessions.length + (tab.sessions.length === 1 ? " session" : " sessions")
-            color: root.foreground
-            opacity: 0.5
+                + (tab.version ? " · herdr " + tab.version : "")
+                + (mismatch ? " (" + root.localVersion + " here)" : "")
+            color: mismatch ? Color.urgent : root.foreground
+            opacity: mismatch ? 0.9 : 0.5
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
           }
@@ -632,7 +788,8 @@ Item {
                 id: tabLabel
                 anchors.centerIn: parent
                 textFormat: Text.PlainText
-                text: tabChip.tab ? tabChip.tab.label + (tabChip.tab.loaded && !tabChip.tab.ok ? " !" : "") : ""
+                text: tabChip.tab ? tabChip.tab.label
+                  + ((tabChip.tab.loaded && !tabChip.tab.ok) || root.versionMismatch(tabChip.tab) ? " !" : "") : ""
                 color: tabChip.current ? root.selectedText : root.foreground
                 opacity: tabChip.current ? 1 : (tabChip.tab && tabChip.tab.loaded && !tabChip.tab.ok ? 0.4 : 0.65)
                 font.family: root.fontFamily
@@ -821,7 +978,7 @@ Item {
                   Button {
                     visible: row.running
                     iconText: ""
-                    tooltipText: "Stop (s)"
+                    tooltipText: "Stop (" + root.hint("stop") + ")"
                     foreground: root.foreground
                     onClicked: root.stopSession(displayModel.get(row.index))
                   }
@@ -829,7 +986,7 @@ Item {
                   Button {
                     visible: !row.running && !row.isDefault
                     iconText: ""
-                    tooltipText: "Delete (d)"
+                    tooltipText: "Delete (" + root.hint("delete") + ")"
                     foreground: root.foreground
                     onClicked: root.requestDeleteSession(displayModel.get(row.index))
                   }
@@ -912,7 +1069,18 @@ Item {
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
               onAccepted: root.submitForm()
+              onTextChanged: root.formError = ""
               Keys.onEscapePressed: root.cancelForm()
+            }
+
+            Text {
+              visible: root.formError !== ""
+              text: root.formError
+              width: parent.width
+              wrapMode: Text.Wrap
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
             }
 
             Row {
@@ -948,7 +1116,7 @@ Item {
           verticalAlignment: Text.AlignBottom
           text: root.formMode ? "enter " + (root.formMode === "machine" ? "add" : "create") + " · esc cancel"
             : root.searching ? "type to search · ↑↓ select · enter open · esc stop searching"
-            : "h l machine · j k move · enter open · / search · n new · s stop · d delete · a x add/remove machine"
+            : root.footerHints()
           color: root.foreground
           opacity: 0.45
           font.family: root.fontFamily

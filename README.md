@@ -1,10 +1,10 @@
 # Herdr Session Manager for Omarchy
 
-Interactive session picker, launcher, and manager for [Herdr](https://herdr.dev) AI coding agent sessions.
+Pick, open, and manage your [herdr](https://herdr.dev) sessions, on this computer and your other machines.
 
 ![Herdr Session Manager](preview.png)
 
-Requires [herdr](https://herdr.dev) (ships with Omarchy).
+Requires herdr (ships with Omarchy).
 
 ---
 
@@ -18,7 +18,7 @@ omarchy plugin add https://github.com/houtvongsak/omarchy-herdr-sessions.git --e
 
 ### Step 2: Add Shortcut
 
-Run this command in your terminal to bind **`Super + Ctrl + Enter`**:
+Run this to bind **`Super + Ctrl + Enter`**:
 
 ```bash
 cat << 'EOF' >> ~/.config/hypr/bindings.lua
@@ -30,72 +30,71 @@ EOF
 hyprctl reload
 ```
 
-*(Or edit manually with `nano ~/.config/hypr/bindings.lua` and run `hyprctl reload`).*
-
 ---
 
 ### Step 3: Use It
 
-Press **`Super + Ctrl + Enter`**. Each machine has a tab, this computer first, named by host name as herdr shows it. Every herdr session on it is listed, running or stopped. A session that a herdr window on this computer is showing is lit and marked **open here**; the rest are dimmer.
+Press **`Super + Ctrl + Enter`**. The first time, pick your keys: **Default** (type to search) or **Vim** (`hjkl`, `/` to search).
 
-Type to search the current machine's sessions. The keys:
+| Default | Vim | Action |
+|---|---|---|
+| type | `/` | Search |
+| `↑` `↓` | `k` `j` | Move |
+| `Tab` / `Shift+Tab` | `l` / `h` | Next / previous machine |
+| `Enter` | `Enter` | Open (a stopped session starts again) |
+| `Ctrl+N` | `n` | New session |
+| `Ctrl+S` | `s` | Stop |
+| `Ctrl+D` | `d` | Delete a stopped session |
+| `Ctrl+A` / `Ctrl+X` | `a` / `x` | Add / remove a machine |
+| `Ctrl+K` | `Ctrl+K` | Switch Default ↔ Vim |
+| `Esc` | `Esc` | Clear search, then close |
 
-| Key | Action |
-|---|---|
-| `↑` / `↓` | Previous / next session |
-| `Tab` / `Shift+Tab` (or `→` / `←`) | Next / previous machine |
-| `Enter` | Open the session (a stopped one starts again) |
-| `Ctrl+N` | New session on this machine |
-| `Ctrl+S` | Stop the session |
-| `Ctrl+D` / `Delete` | Delete a stopped session |
-| `Ctrl+A` / `Ctrl+X` | Add a machine / remove this machine's tab |
-| `Ctrl+R` | Refresh |
-| `Ctrl+K` | Switch between default and vim keys |
-| `Esc` | Clear the search, then close |
+A session lit and marked **open here** already has a herdr window on this computer.
 
-#### Your own keys
+---
 
-The first time the picker opens (or after updating from a version without this), it asks once: **Default** (type to search) or **Vim** (`hjkl`, `/` to search). Your answer is saved to `~/.config/herdr-sessions/keys.json`. Switch any time with `Ctrl+K`. Click **keys:** next to the tabs to open the file in your editor: it lists every action with its current keys under `_presetKeys`, so copy a line into `keys`, change it, and save; the picker picks it up as soon as you save, and the footer points out keys that clash or can't fire.
+### Your Keys
+
+Click **keys:** in the picker to open `~/.config/herdr-sessions/keys.json`. It lists every action with its keys; copy one into `keys`, change it, save. It applies at once.
 
 ```json
 {
   "preset": "vim",
-  "keys": {
-    "stop": ["ctrl+s"],
-    "newSession": ["n", "ctrl+n"]
-  }
+  "keys": { "stop": ["s", "f2"] }
 }
 ```
 
-- **Presets:** `default` (above, type to search) or `vim` (`j`/`k` sessions, `h`/`l` machines, `/` to search, and single letters `n` `s` `d` `a` `x` `r` for the actions).
-- **Actions:** `up`, `down`, `nextMachine`, `prevMachine`, `open`, `search`, `newSession`, `stop`, `delete`, `addMachine`, `removeMachine`, `refresh`, `switchKeys`, `editKeys` (unbound by default; the **keys:** label does it).
-- **Keys:** a letter or digit, a symbol like `/`, or `up` `down` `left` `right` `tab` `return` `delete` `backspace` `space` `home` `end` `pageup` `pagedown` `f1`…`f12`, with any of `ctrl+` `alt+` `shift+` in front.
-- `"typeToSearch": true` keeps type-to-search with any preset. Avoid binding bare letters then, as they'd only ever type.
+Keys can be letters, digits, symbols, arrows, `f1`–`f12`, with `ctrl+` `alt+` `shift+`. The footer warns about keys that clash.
 
 ---
 
 ### Other Machines
 
-The picker looks for sessions on every machine in `~/.config/herdr-sessions/machines`, one SSH target per line (`user@host` or a `Host` from `~/.ssh/config`), plus any machine saved with `herdr machine add`:
+Each machine gets its own tab. Add one with `Ctrl+A` (or `a`), or list them in `~/.config/herdr-sessions/machines`, one per line:
 
 ```
-# ~/.config/herdr-sessions/machines
 you@buildbox
-desktop
+ssh://you@server:2222
 ```
 
-- Adding a machine in the picker adds a line; removing one deletes its line. A machine saved in herdr gets a `-target` line instead, which hides it here and leaves herdr's own list alone.
-- Targets can be `user@host`, a `Host` from `~/.ssh/config`, or `ssh://user@host:port`.
-- This computer is skipped, so one list can be shared by all your machines.
-- Each tab shows that machine's herdr version, flagged when it differs from this computer's: an older client can't always attach to a newer server. If opening a session fails, the terminal stays open with herdr's error.
-- Each machine needs SSH that doesn't prompt (a key or agent) and herdr; `~/.local/bin`, where herdr installs itself, is searched.
-- Sessions are read with `herdr session list --json` over SSH, all machines at once. Opening one runs `herdr --remote <target> [--session <name>]` in a terminal; stop and delete run `herdr session stop|delete` over SSH.
+Machines saved with `herdr machine add` show up too. Each needs herdr and SSH without a password prompt (a key). Tabs show each machine's herdr version and flag one that differs from yours; keep versions the same for opening to work.
+
+---
+
+### Update
+
+```bash
+omarchy plugin update io.github.houtvongsak.herdr-sessions
+omarchy-restart-shell
+```
+
+The restart makes Omarchy load the new version.
 
 ---
 
 ### Removal
 
-Remove the plugin and restore the original `Super + Ctrl + Enter` (opens default herdr):
+Remove the plugin and restore the original `Super + Ctrl + Enter`:
 
 ```bash
 omarchy plugin remove io.github.houtvongsak.herdr-sessions

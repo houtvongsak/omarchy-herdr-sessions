@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "id": "io.github.houtvongsak.herdr-sessions",
   "name": "Herdr Session Manager",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "houtvongsak",
   "license": "MIT",
   "description": "Interactive session picker, launcher, and manager for Herdr terminal workspace sessions.",

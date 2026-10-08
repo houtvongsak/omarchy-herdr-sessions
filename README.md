@@ -38,19 +38,38 @@ hyprctl reload
 
 Press **`Super + Ctrl + Enter`**. Each machine has a tab, this computer first, named by host name as herdr shows it. Every herdr session on it is listed, running or stopped. A session that a herdr window on this computer is showing is lit and marked **open here**; the rest are dimmer.
 
+Type to search the current machine's sessions. The keys:
+
 | Key | Action |
 |---|---|
-| `h` / `l` (or `←` / `→`, `Tab`) | Previous / next machine |
-| `j` / `k` (or `↓` / `↑`) | Next / previous session |
+| `↑` / `↓` | Previous / next session |
+| `Tab` / `Shift+Tab` (or `→` / `←`) | Next / previous machine |
 | `Enter` | Open the session (a stopped one starts again) |
-| `/` | Search this machine's sessions; `Esc` leaves the search |
-| `n` | New session on this machine |
-| `s` | Stop the session |
-| `d` / `Delete` | Delete a stopped session |
-| `a` / `x` | Add a machine / remove this machine's tab |
-| `r` | Refresh |
-| `h` `j` `k` `l` (in a confirm box) | Move between Cancel and Delete / Remove |
-| `Esc` | Close |
+| `Ctrl+N` | New session on this machine |
+| `Ctrl+S` | Stop the session |
+| `Ctrl+D` / `Delete` | Delete a stopped session |
+| `Ctrl+A` / `Ctrl+X` | Add a machine / remove this machine's tab |
+| `Ctrl+R` | Refresh |
+| `Esc` | Clear the search, then close |
+
+#### Your own keys
+
+Put a `~/.config/herdr-sessions/keys.json` next to the machines file. Pick a preset, then change any action you like; the picker picks it up as soon as you save.
+
+```json
+{
+  "preset": "vim",
+  "keys": {
+    "stop": ["ctrl+s"],
+    "newSession": ["n", "ctrl+n"]
+  }
+}
+```
+
+- **Presets:** `default` (above, type to search) or `vim` (`j`/`k` sessions, `h`/`l` machines, `/` to search, and single letters `n` `s` `d` `a` `x` `r` for the actions).
+- **Actions:** `up`, `down`, `nextMachine`, `prevMachine`, `open`, `search`, `newSession`, `stop`, `delete`, `addMachine`, `removeMachine`, `refresh`.
+- **Keys:** a letter or digit, a symbol like `/`, or `up` `down` `left` `right` `tab` `return` `delete` `backspace` `space` `home` `end` `pageup` `pagedown`, with any of `ctrl+` `alt+` `shift+` in front.
+- `"typeToSearch": true` keeps type-to-search with any preset. Avoid binding bare letters then, as they'd only ever type.
 
 ---
 
@@ -64,8 +83,10 @@ you@buildbox
 desktop
 ```
 
-- `a` in the picker adds a line; `x` removes the current machine's.
+- Adding a machine in the picker adds a line; removing one deletes its line. A machine saved in herdr gets a `-target` line instead, which hides it here and leaves herdr's own list alone.
+- Targets can be `user@host`, a `Host` from `~/.ssh/config`, or `ssh://user@host:port`.
 - This computer is skipped, so one list can be shared by all your machines.
+- Each tab shows that machine's herdr version, flagged when it differs from this computer's: an older client can't always attach to a newer server. If opening a session fails, the terminal stays open with herdr's error.
 - Each machine needs SSH that doesn't prompt (a key or agent) and herdr; `~/.local/bin`, where herdr installs itself, is searched.
 - Sessions are read with `herdr session list --json` over SSH, all machines at once. Opening one runs `herdr --remote <target> [--session <name>]` in a terminal; stop and delete run `herdr session stop|delete` over SSH.
 

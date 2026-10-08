@@ -979,8 +979,9 @@ Item {
                     font.bold: row.attachedHere
                   }
 
+                  // herdr's default session is named "default", so the tag would only repeat it.
                   Text {
-                    visible: row.isDefault
+                    visible: row.isDefault && row.name !== "default"
                     anchors.verticalCenter: parent.verticalCenter
                     text: "default"
                     color: root.foreground

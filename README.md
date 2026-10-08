@@ -55,7 +55,7 @@ Type to search the current machine's sessions. The keys:
 
 #### Your own keys
 
-The first time the picker opens (or after updating from a version without this), it asks once: **Default** (type to search) or **Vim** (`hjkl`, `/` to search). Your answer is saved to `~/.config/herdr-sessions/keys.json`. Switch any time with `Ctrl+K`. Click **keys:** next to the tabs to open the file in your editor and change any action; the picker picks it up as soon as you save, and the footer points out keys that clash or can't fire.
+The first time the picker opens (or after updating from a version without this), it asks once: **Default** (type to search) or **Vim** (`hjkl`, `/` to search). Your answer is saved to `~/.config/herdr-sessions/keys.json`. Switch any time with `Ctrl+K`. Click **keys:** next to the tabs to open the file in your editor: it lists every action with its current keys under `_presetKeys`, so copy a line into `keys`, change it, and save; the picker picks it up as soon as you save, and the footer points out keys that clash or can't fire.
 
 ```json
 {

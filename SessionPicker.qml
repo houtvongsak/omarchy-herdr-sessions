@@ -44,6 +44,8 @@ Item {
   property var keymap: root.presetKeys("default")
   // keys.json as read, so switching presets keeps any custom keys in it.
   property var keysConfig: ({})
+  // False when keys.json exists but isn't valid JSON: then it's never rewritten, only opened.
+  property bool keysFileValid: true
   // Keys that clash or can never fire, explained in the footer so a typo isn't silent.
   property string keysWarning: ""
   // No keys.json yet (a first run, or an update from before it existed): ask once.
@@ -438,6 +440,12 @@ Item {
 
   function loadKeys(raw) {
     var config = root.parseJson(raw, {}, "keys.json")
+    try {
+      if (String(raw || "").trim()) JSON.parse(raw)
+      root.keysFileValid = true
+    } catch (e) {
+      root.keysFileValid = false
+    }
     root.keysConfig = config
     var preset = config.preset === "vim" ? "vim" : "default"
     var map = root.presetKeys(preset)
@@ -454,7 +462,8 @@ Item {
     root.keyPreset = preset
     root.typeToSearch = typeof config.typeToSearch === "boolean" ? config.typeToSearch : preset !== "vim"
     root.keymap = map
-    root.keysWarning = root.keyProblems(map, root.typeToSearch)
+    root.keysWarning = root.keysFileValid ? root.keyProblems(map, root.typeToSearch)
+      : "not valid JSON, so the " + preset + " keys are in use · click keys: to fix it"
   }
 
   function keyProblems(map, typing) {
@@ -488,6 +497,7 @@ Item {
 
   // Flips between the presets, keeping the rest of keys.json as it is.
   function switchKeys() {
+    if (!root.keysFileValid) return // never overwrite a file mid-edit; the footer says why
     var config = JSON.parse(JSON.stringify(root.keysConfig || {}))
     config.preset = root.keyPreset === "vim" ? "default" : "vim"
     root.saveKeys(config)
@@ -495,23 +505,52 @@ Item {
     root.searching = false
   }
 
-  // Opens keys.json in the editor chosen in Omarchy, writing the current preset first if
-  // there's no file yet. Saved changes apply while the picker is open or closed.
+  // Opens keys.json in the editor chosen in Omarchy, refreshing its reference sections
+  // first (or writing it, if there's none yet). A file that isn't valid JSON is opened as it
+  // is, so a half-finished edit is never overwritten.
   function editKeys() {
-    var json = JSON.stringify(root.keysConfig && root.keysConfig.preset ? root.keysConfig : { preset: root.keyPreset }, null, 2)
+    if (root.keysFileValid) root.writeKeys(root.keysConfig && root.keysConfig.preset ? root.keysConfig : { preset: root.keyPreset })
     root.dismiss()
-    Quickshell.execDetached(["sh", "-c",
-      '[ -f "$1" ] || { mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1"; }; exec omarchy-launch-editor "$1"',
-      "sh", root.keysPath, json])
+    Quickshell.execDetached(["sh", "-c", 'sleep 0.2; exec omarchy-launch-editor "$1"', "sh", root.keysPath])
   }
 
   function saveKeys(config) {
-    var json = JSON.stringify(config, null, 2)
-    Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1"', "sh",
-      root.keysPath, json])
-    root.loadKeys(json)
+    root.loadKeys(root.writeKeys(config))
     root.keysChosen = true
     root.choosingKeys = false
+  }
+
+  // keys.json as the picker writes it: the settings first, then two sections it ignores
+  // (JSON has no comments) that show how to edit and every action's keys in this preset.
+  function keysFileText(config) {
+    var preset = config.preset === "vim" ? "vim" : "default"
+    var custom = config.keys || {}
+    var builtIn = root.presetKeys(preset)
+    function entries(obj) {
+      return Object.keys(obj).map(function(name) {
+        return '    "' + name + '": ' + JSON.stringify(obj[name]).replace(/","/g, '", "')
+      }).join(",\n")
+    }
+    var help = [
+      "Change a key: copy its line from _presetKeys into keys above, edit it, save. It applies at once.",
+      "preset is default (type to search) or vim (hjkl, / to search). Ctrl+K in the picker switches it.",
+      "Key names: a-z 0-9 symbols like / , up down left right tab return delete backspace space home end pageup pagedown f1-f12.",
+      "Put ctrl+ alt+ shift+ in front, e.g. ctrl+s. A list means any of them: [\"s\", \"f2\"]. Esc always closes."
+    ]
+    var lines = ["{", '  "preset": "' + preset + '",']
+    if (typeof config.typeToSearch === "boolean") lines.push('  "typeToSearch": ' + config.typeToSearch + ",")
+    lines.push('  "keys": {' + (Object.keys(custom).length ? "\n" + entries(custom) + "\n  " : "") + "},")
+    lines.push('  "_help": [\n' + help.map(function(line) { return "    " + JSON.stringify(line) }).join(",\n") + "\n  ],")
+    lines.push('  "_presetKeys": {\n' + entries(builtIn) + "\n  }")
+    lines.push("}")
+    return lines.join("\n")
+  }
+
+  function writeKeys(config) {
+    var text = root.keysFileText(config)
+    Quickshell.execDetached(["sh", "-c", 'mkdir -p "$(dirname "$1")" && printf "%s\\n" "$2" > "$1"', "sh",
+      root.keysPath, text])
+    return text
   }
 
   // "Ctrl+Shift+Tab", "shift+ctrl+tab" and "ctrl+shift+tab" all become "ctrl+shift+tab".

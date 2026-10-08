@@ -5,6 +5,8 @@
 #                      {"host": ..., "version": ..., "machines": [{target, key}]}
 #   machines           every machine's herdr sessions and version, fetched over SSH in parallel:
 #                      [{target, key, label, version, ok, error, sessions: [...]}]
+#   local              this computer's sessions, as `herdr session list --json`, without the
+#                      empty folders `herdr --remote --session X` leaves behind for its client log
 #   attached           the sessions this computer's herdr clients are showing: [{key, session}]
 #                      (key is "" for a local session)
 #   stop <target> <session>     stop a session on a machine
@@ -87,6 +89,18 @@ fetch() { # <target> <key> <outfile>
     jq -nc --arg target "$target" --arg key "$key" --arg version "$version" --arg error "${error:-ssh exited $rc}" \
       '{target: $target, key: $key, label: $target, version: $version, ok: false, error: $error, sessions: []}' >"$3"
   fi
+}
+
+# `herdr --remote T --session X` logs into ~/.config/herdr/sessions/X on this computer, and
+# `session list` then shows X as a stopped local session that never existed here. A session
+# that ever ran has a server log or saved state; one with neither is only that log folder.
+cmd_local() {
+  local json ghosts=() dir name
+  json=$(herdr session list --json) || return 1
+  while IFS=$'\t' read -r name dir; do
+    [[ -e $dir/herdr-server.log || -e $dir/session.json ]] || ghosts+=("$name")
+  done < <(jq -r '.sessions[] | select(.running | not) | [.name, .session_dir] | @tsv' <<<"$json")
+  jq --args '.sessions |= map(select(.name as $n | $ARGS.positional | index($n) | not))' "${ghosts[@]}" <<<"$json"
 }
 
 cmd_machines() {
@@ -185,6 +199,7 @@ cmd_remove() {
 
 case ${1:-} in
   list) cmd_list ;;
+  local) cmd_local ;;
   machines) cmd_machines ;;
   attached) cmd_attached ;;
   stop) cmd_stop "${2:-}" "${3:-}" ;;

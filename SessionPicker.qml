@@ -624,7 +624,7 @@ Item {
 
   Process {
     id: listProc
-    command: ["herdr", "session", "list", "--json"]
+    command: [root.dataScript, "local"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.parseSessions(text)
